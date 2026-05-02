@@ -1,0 +1,76 @@
+{
+  "identifier" : "Subscriptions",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "99.99",
+      "familyShareable" : false,
+      "internalID" : "99C8E7D1",
+      "localizations" : [
+        {
+          "description" : "Unlock all premium features forever.",
+          "displayName" : "Lifetime Premium",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.jimwas.bodycampro.premium.lifetime",
+      "referenceName" : "Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_storeKitErrors" : [
+      {
+        "currentRestoreError" : 0,
+        "fullRefundError" : 0,
+        "lastSelectedActionOption" : 0,
+        "purchaseError" : 0,
+        "refundRequestError" : 0,
+        "renewalError" : 0
+      }
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "7E89C1D2",
+      "localizations" : [
+
+      ],
+      "name" : "Premium",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "3.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "2F9A3B4C",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlimited recording and no ads.",
+              "displayName" : "Monthly Premium",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.jimwas.bodycampro.premium.monthly",
+          "recurrencePeriod" : "monthly",
+          "referenceName" : "Monthly",
+          "subscriptionGroupID" : "7E89C1D2",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

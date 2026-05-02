@@ -1,97 +1,72 @@
-🎥 TravelVid Recorder
-A stealth video recorder for travelers designed to deter theft while capturing footage on the go.
-Overview
-TravelVid Recorder is an iOS app that records video in the background while displaying a decoy interface (cover image or playable Tetris game) to prevent thieves from knowing they're being recorded. Perfect for travel vlogging, security, or discreet documentation.
-✨ Key Features
-🎮 Dual Recording Modes
+# Bodycam Pro
 
-Cover Image Mode: Display a static image while recording
-Tetris Game Mode: Play a fully functional Tetris game during recording
+Bodycam Pro is an iOS body camera app for recording video with GPS location tracking, map playback, exports, and an optional premium upgrade for unlimited recording.
 
-🔒 Anti-Theft Protection
+## Features
 
-Fake "Storage Full" popups to deter device theft
-Hardware volume button blocking during recording
-Customizable stop gestures (swipes, corner taps, multi-tap)
-Hidden recording interface - thieves won't know they're being filmed
+- Video recording with camera, audio, and live recording status
+- GPS capture with location metadata attached to recordings
+- Map playback for recorded videos, including route display when location history is available
+- Batch export to Photos
+- Recording library with file size, duration, date, and map access
+- Automatic safe-stop handling for interruptions and app lifecycle changes
+- Free tier with a 30-minute recording limit per session
+- Premium subscription support for unlimited recording
+- AdMob integration for free users
 
-📹 Advanced Recording
+## Premium
 
-Auto-segmentation (1-10 minute chunks)
-Multiple resolution options (720p, 1080p, 4K)
-Front/back camera support with ultra-wide lens option
-Audio recording toggle
-Safe file handling prevents corruption on app interruption
+- Product ID: `com.jimwas.bodycampro.premium.monthly`
+- Price: $3.99/month
+- Unlocks unlimited recording time
 
-🛡️ Crash Protection
+## Tech Stack
 
-Automatic video saving when app is force-closed
-Background task management for safe recording
-Corrupted file detection and cleanup
-Disk space monitoring
+- SwiftUI
+- AVFoundation
+- MapKit
+- CoreLocation
+- StoreKit 2
+- Google Mobile Ads SDK
 
-📱 Recording Management
+## Requirements
 
-Batch export to Photos library with confirmation
-Batch delete with selection mode
-File size and duration display
-Automatic chronological sorting
+- iOS 17.6+
+- Xcode 16+
+- Camera permission
+- Microphone permission
+- Location permission for GPS tagging
+- Photo Library permission for exports
 
-🎯 Use Cases
+## Project Structure
 
-Travel Safety: Record surroundings without drawing attention
-Vlogging: Capture B-roll while appearing to do something else
-Security: Discreet recording in public spaces
-Documentation: Record interactions while maintaining casual appearance
+- `Bodycam Pro/RecordingManager.swift`  
+  Recording session setup, capture lifecycle, interruption handling, and file management
+- `Bodycam Pro/MainView.swift`  
+  Main app UI, recording library, map sheet, export flow, and premium entry points
+- `Bodycam Pro/RecordingView.swift`  
+  Active recording screen and free-tier limit handling
+- `Bodycam Pro/SubscriptionManager.swift`  
+  StoreKit 2 product loading, purchase, restore, and entitlement state
+- `Bodycam Pro/AdMobManager.swift`  
+  Interstitial, rewarded, and native ad loading
 
-🎮 Tetris Features
+## Setup
 
-Classic gameplay with 7 piece types
-Score and level progression
-Hard drop button for quick placement
-Pause functionality
-Wall kick rotation system
-Optimized for iPhone screens
+1. Clone the repository.
+2. Open `Bodycam Pro.xcworkspace` in Xcode.
+3. Configure your signing team and bundle settings.
+4. Add your own AdMob unit IDs if needed.
+5. Configure the subscription product in App Store Connect:
+   `com.jimwas.bodycampro.premium.monthly`
+6. Build and run on a device.
 
-🔧 Technical Highlights
+## Notes
 
-Built with SwiftUI and AVFoundation
-Background audio mode for uninterrupted recording
-Swift 6 concurrency compliance
-iOS 15+ compatible
-Proper main actor isolation
-Memory-efficient popup scheduling
+- The app uses CocoaPods for Google Mobile Ads.
+- The app currently includes a StoreKit configuration file for local subscription testing.
+- App icon assets were regenerated from the current logo and are included in the asset catalog.
 
-📋 Requirements
+## Disclaimer
 
-iOS 15.0+
-Camera and microphone permissions
-Photo library access for exports
-~500MB free storage recommended
-
-⚙️ Configuration
-The app includes customizable settings:
-
-Camera position (front/back)
-Lens type (wide/ultra-wide)
-Recording resolution
-Segment duration
-Stop gesture type
-Fake popup toggle
-
-🚀 Installation
-
-Clone the repository
-Open TravelVid Recorder.xcodeproj in Xcode
-Configure signing & capabilities
-Enable "Background Modes" → "Audio, AirPlay, and Picture in Picture"
-Build and run on device
-
-⚠️ Disclaimer
-This app is designed for personal security and legitimate recording purposes. Users are responsible for complying with local laws regarding recording and consent. The developers assume no liability for misuse.
-📄 License
-[Your chosen license here]
-🤝 Contributing
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
-
-Built for travelers who want to stay safe and capture their adventures without drawing unwanted attention. 🌍✈️
+Users are responsible for complying with local laws regarding recording, privacy, and consent.

@@ -14,9 +14,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "63A7C675C13F87669AF56006D943998B"
-               BuildableName = "UserMessagingPlatformResources.bundle"
-               BlueprintName = "GoogleUserMessagingPlatform-UserMessagingPlatformResources"
+               BlueprintIdentifier = "6D36FFEAFD87B2C45581372EF2D22FA0"
+               BuildableName = "Pods_Bodycam_Pro.framework"
+               BlueprintName = "Pods-Bodycam Pro"
                ReferencedContainer = "container:Pods.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
