@@ -56,56 +56,33 @@ class SafeRecordingHandler: NSObject {
     // MARK: - Background Task
     @MainActor
     private func startBackgroundTask() {
-        // End existing task first
         endBackgroundTask()
-        
-        // Request extra time to finish recording if app goes to background
-        backgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
-            // Called when time expires
-            guard let self = self else { return }
-            Task { @MainActor in
-                self.handleBackgroundTimeout()
-            }
+
+        // The expiration handler is called synchronously on the main thread by iOS,
+        // always after beginBackgroundTask returns, so self.backgroundTaskID is valid.
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask {
+            print("⚠️ Background task expiring - emergency save")
+            NotificationCenter.default.post(name: NSNotification.Name("EmergencyStopRecording"), object: nil)
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
         }
-        
-        // Monitor remaining time and warn if getting low
+
         if backgroundTaskID != .invalid {
-            let remainingTime = UIApplication.shared.backgroundTimeRemaining
-            
-            // Check if time is valid (not infinite)
-            if remainingTime != .greatestFiniteMagnitude && remainingTime.isFinite {
-                print("🕐 Background task started. Remaining time: \(Int(remainingTime))s")
+            let remaining = UIApplication.shared.backgroundTimeRemaining
+            if remaining.isFinite && remaining != .greatestFiniteMagnitude {
+                print("🕐 Background task started. Remaining time: \(Int(remaining))s")
             } else {
-                print("🕐 Background task started. Remaining time: unlimited")
-            }
-            
-            // Schedule automatic cleanup before iOS force-kills us
-            Task { @MainActor in
-                // Wait for 25 seconds (leaving 5 second buffer before 30s limit)
-                try? await Task.sleep(for: .seconds(25))
-                
-                if self.backgroundTaskID != .invalid {
-                    print("⏰ Background task approaching limit - cleaning up")
-                    self.endBackgroundTask()
-                }
+                print("🕐 Background task started.")
             }
         }
     }
-    
+
     @MainActor
     private func endBackgroundTask() {
-        if backgroundTaskID != .invalid {
-            print("✅ Ending background task")
-            UIApplication.shared.endBackgroundTask(backgroundTaskID)
-            backgroundTaskID = .invalid
-        }
-    }
-    
-    @MainActor
-    private func handleBackgroundTimeout() {
-        // Emergency cleanup if we run out of background time
-        print("⚠️ Background task expiring - emergency cleanup")
-        endBackgroundTask()
+        guard backgroundTaskID != .invalid else { return }
+        print("✅ Ending background task")
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
     }
     
     // MARK: - App Lifecycle Handlers
@@ -132,9 +109,9 @@ class SafeRecordingHandler: NSObject {
     }
     
     @MainActor @objc private func handleAppDidEnterBackground() {
+        // Only request background time when we're actually recording.
+        guard activeRecordingURL != nil else { return }
         print("🌙 App entered background - maintaining background task")
-        
-        // Ensure we have background time to finish current segment
         if backgroundTaskID == .invalid {
             startBackgroundTask()
         }

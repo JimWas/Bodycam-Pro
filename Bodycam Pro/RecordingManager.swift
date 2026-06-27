@@ -4,6 +4,7 @@ import Photos
 import UIKit
 import os
 import CoreLocation
+import CryptoKit
 
 @preconcurrency import AVFoundation   // Suppress non-Sendable warnings
 
@@ -60,6 +61,10 @@ struct Recording: Identifiable {
     let longitude: Double?
     let address: String?
     let locationPath: [LocationPoint]?
+    var customName: String?
+    var tags: [String]
+
+    var displayName: String { customName ?? name }
 }
 
 // MARK: - Recording Metadata (for persistence)
@@ -68,6 +73,27 @@ struct RecordingMetadata: Codable {
     let longitude: Double?
     let address: String?
     let locationPath: [LocationPoint]?
+    var customName: String?
+    var tags: [String]?
+}
+
+struct EvidenceSummary: Codable {
+    let recordingName: String
+    let generatedAt: Date
+    let recordingStartedAt: Date?
+    let durationSeconds: TimeInterval
+    let originalFileSizeBytes: Int64
+    let exportedFileSizeBytes: Int64
+    let originalSHA256: String
+    let exportedSHA256: String
+    let latitude: Double?
+    let longitude: Double?
+    let address: String?
+    let locationPointCount: Int
+    let timestampWatermarkIncluded: Bool
+    let gpsOverlayIncluded: Bool
+    let appVersion: String
+    let buildNumber: String
 }
 
 // MARK: - RecordingManager
@@ -85,6 +111,13 @@ class RecordingManager: NSObject, ObservableObject {
     @Published var isInterrupted = false
     @Published var isResuming = false
     @Published var interruptionMessage: String?
+    @Published var evidenceModeEnabled = false
+    @Published var includeTimestampWatermark = true
+    @Published var includeGPSOverlay = true
+    @Published var generateEvidenceSummary = true
+    @Published var iCloudBackupEnabled: Bool = UserDefaults.standard.bool(forKey: "iCloudBackupEnabled") {
+        didSet { UserDefaults.standard.set(iCloudBackupEnabled, forKey: "iCloudBackupEnabled") }
+    }
     let freeRecordingLimit: TimeInterval = 30 * 60
 
     var isPremium: Bool {
@@ -358,8 +391,14 @@ class RecordingManager: NSObject, ObservableObject {
             .appendingPathComponent("Videos")
     }
 
+    private func evidenceDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Evidence")
+    }
+
     private func createDirectory() {
         try? FileManager.default.createDirectory(at: directory(), withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: evidenceDirectory(), withIntermediateDirectories: true)
     }
 
     // MARK: - Metadata Persistence
@@ -435,7 +474,9 @@ class RecordingManager: NSObject, ObservableObject {
                                   latitude: metadata?.latitude,
                                   longitude: metadata?.longitude,
                                   address: metadata?.address,
-                                  locationPath: metadata?.locationPath))
+                                  locationPath: metadata?.locationPath,
+                                  customName: metadata?.customName,
+                                  tags: metadata?.tags ?? []))
         }
 
         recordings = list.sorted { ($0.creation ?? .distantPast) > ($1.creation ?? .distantPast) }
@@ -464,18 +505,324 @@ class RecordingManager: NSObject, ObservableObject {
         }
     }
 
+    func exportRecordingToLibrary(_ rec: Recording) async throws {
+        let assetURL: URL
+        if evidenceModeEnabled {
+            assetURL = try await createEvidenceExport(for: rec)
+        } else {
+            assetURL = rec.url
+        }
+
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: assetURL)
+
+            if let lat = rec.latitude, let lon = rec.longitude {
+                request?.location = CLLocation(latitude: lat, longitude: lon)
+            }
+
+            if let creation = rec.creation {
+                request?.creationDate = creation
+            }
+        }
+
+        if evidenceModeEnabled && generateEvidenceSummary {
+            _ = try createEvidenceSummary(for: rec, exportedURL: assetURL)
+        }
+    }
+
+    func prepareEvidenceSummaryFiles(for rec: Recording) async throws -> [URL] {
+        let exportedURL: URL
+        if evidenceModeEnabled {
+            exportedURL = try await createEvidenceExport(for: rec)
+        } else {
+            exportedURL = rec.url
+        }
+
+        let jsonURL = try createEvidenceSummary(for: rec, exportedURL: exportedURL)
+        let txtURL = evidenceDirectory()
+            .appendingPathComponent("\(rec.url.deletingPathExtension().lastPathComponent)-evidence.txt")
+        return [txtURL, jsonURL]
+    }
+
     func deleteRecording(_ rec: Recording) {
         try? FileManager.default.removeItem(at: rec.url)
         recordings.removeAll { $0.id == rec.id }
 
-        // Clean up metadata
         var metadata = loadMetadata()
         metadata.removeValue(forKey: rec.name)
         saveMetadata(metadata)
     }
+
+    func renameRecording(_ rec: Recording, customName: String) {
+        let trimmed = customName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        updateMetadataField(rec: rec) { m in
+            RecordingMetadata(latitude: m.latitude, longitude: m.longitude,
+                              address: m.address, locationPath: m.locationPath,
+                              customName: trimmed, tags: m.tags)
+        }
+        if let idx = recordings.firstIndex(where: { $0.id == rec.id }) {
+            recordings[idx].customName = trimmed
+        }
+    }
+
+    func updateTags(_ rec: Recording, tags: [String]) {
+        updateMetadataField(rec: rec) { m in
+            RecordingMetadata(latitude: m.latitude, longitude: m.longitude,
+                              address: m.address, locationPath: m.locationPath,
+                              customName: m.customName, tags: tags)
+        }
+        if let idx = recordings.firstIndex(where: { $0.id == rec.id }) {
+            recordings[idx].tags = tags
+        }
+    }
+
+    private func updateMetadataField(rec: Recording, transform: (RecordingMetadata) -> RecordingMetadata) {
+        var all = loadMetadata()
+        let existing = all[rec.name] ?? RecordingMetadata(latitude: rec.latitude, longitude: rec.longitude,
+                                                           address: rec.address, locationPath: rec.locationPath,
+                                                           customName: rec.customName, tags: rec.tags)
+        all[rec.name] = transform(existing)
+        saveMetadata(all)
+    }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+// MARK: - Evidence Exports
+private extension RecordingManager {
+    func createEvidenceExport(for rec: Recording) async throws -> URL {
+        let asset = AVURLAsset(url: rec.url)
+        let composition = AVMutableComposition()
+
+        guard let sourceVideoTrack = try await asset.loadTracks(withMediaType: .video).first,
+              let compositionVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw NSError(domain: "BodycamPro.EvidenceMode", code: 1, userInfo: [NSLocalizedDescriptionKey: "Video track unavailable"])
+        }
+
+        let duration = try await asset.load(.duration)
+        try compositionVideoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: sourceVideoTrack, at: .zero)
+
+        if let sourceAudioTrack = try await asset.loadTracks(withMediaType: .audio).first,
+           let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+            try? compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: sourceAudioTrack, at: .zero)
+        }
+
+        let preferredTransform = try await sourceVideoTrack.load(.preferredTransform)
+        let naturalSize = try await sourceVideoTrack.load(.naturalSize)
+        let transformedSize = naturalSize.applying(preferredTransform)
+        let renderSize = CGSize(width: abs(transformedSize.width), height: abs(transformedSize.height))
+
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
+        layerInstruction.setTransform(preferredTransform, at: .zero)
+        instruction.layerInstructions = [layerInstruction]
+
+        let videoComposition = AVMutableVideoComposition()
+        videoComposition.instructions = [instruction]
+        videoComposition.renderSize = renderSize
+        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+
+        let parentLayer = CALayer()
+        parentLayer.frame = CGRect(origin: .zero, size: renderSize)
+        let videoLayer = CALayer()
+        videoLayer.frame = CGRect(origin: .zero, size: renderSize)
+        parentLayer.addSublayer(videoLayer)
+
+        let overlayLayer = makeEvidenceOverlay(for: rec, renderSize: renderSize)
+        parentLayer.addSublayer(overlayLayer)
+
+        videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+            postProcessingAsVideoLayer: videoLayer,
+            in: parentLayer
+        )
+
+        let exportURL = evidenceDirectory()
+            .appendingPathComponent("\(rec.url.deletingPathExtension().lastPathComponent)-evidence.mov")
+
+        try? FileManager.default.removeItem(at: exportURL)
+
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw NSError(domain: "BodycamPro.EvidenceMode", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unable to create export session"])
+        }
+
+        exporter.outputURL = exportURL
+        exporter.outputFileType = .mov
+        exporter.videoComposition = videoComposition
+        exporter.shouldOptimizeForNetworkUse = false
+
+        try await export(exporter)
+        return exportURL
+    }
+
+    func makeEvidenceOverlay(for rec: Recording, renderSize: CGSize) -> CALayer {
+        let overlay = CALayer()
+        overlay.frame = CGRect(origin: .zero, size: renderSize)
+        overlay.masksToBounds = true
+
+        let padding: CGFloat = 24
+        let lineHeight: CGFloat = 24
+        var lines: [String] = []
+
+        if includeTimestampWatermark {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .medium
+            let timestamp = formatter.string(from: rec.creation ?? Date())
+            lines.append("RECORDED \(timestamp)")
+        }
+
+        if includeGPSOverlay, let lat = rec.latitude, let lon = rec.longitude {
+            lines.append(String(format: "GPS %.6f, %.6f", lat, lon))
+        }
+
+        if let address = rec.address, includeGPSOverlay {
+            lines.append(address)
+        }
+
+        guard !lines.isEmpty else { return overlay }
+
+        let backdrop = CALayer()
+        backdrop.backgroundColor = UIColor.black.withAlphaComponent(0.58).cgColor
+        backdrop.cornerRadius = 14
+        backdrop.frame = CGRect(
+            x: padding - 10,
+            y: renderSize.height - padding - CGFloat(lines.count) * lineHeight - 18,
+            width: min(renderSize.width - (padding * 2), renderSize.width * 0.82),
+            height: CGFloat(lines.count) * lineHeight + 20
+        )
+        overlay.addSublayer(backdrop)
+
+        for (index, line) in lines.enumerated() {
+            let textLayer = CATextLayer()
+            textLayer.contentsScale = UIScreen.main.scale
+            textLayer.font = UIFont.monospacedSystemFont(ofSize: 16, weight: .semibold)
+            textLayer.fontSize = 16
+            textLayer.foregroundColor = UIColor.white.cgColor
+            textLayer.alignmentMode = .left
+            textLayer.string = line
+            textLayer.frame = CGRect(
+                x: padding,
+                y: renderSize.height - padding - CGFloat(lines.count - index) * lineHeight,
+                width: backdrop.frame.width - 20,
+                height: lineHeight
+            )
+            overlay.addSublayer(textLayer)
+        }
+
+        return overlay
+    }
+
+    func export(_ exporter: AVAssetExportSession) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            // Capture status/error before entering the Sendable closure to avoid
+            // capturing the non-Sendable AVAssetExportSession across concurrency boundaries.
+            exporter.exportAsynchronously { [status = exporter.status, exportError = exporter.error] in
+                switch status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    let error = exportError ?? NSError(
+                        domain: "BodycamPro.EvidenceMode",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "Evidence export failed"]
+                    )
+                    continuation.resume(throwing: error)
+                default:
+                    let error = NSError(
+                        domain: "BodycamPro.EvidenceMode",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "Evidence export ended in unexpected state"]
+                    )
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func createEvidenceSummary(for rec: Recording, exportedURL: URL) throws -> URL {
+        let summary = EvidenceSummary(
+            recordingName: rec.name,
+            generatedAt: Date(),
+            recordingStartedAt: rec.creation,
+            durationSeconds: rec.duration,
+            originalFileSizeBytes: rec.size,
+            exportedFileSizeBytes: fileSize(for: exportedURL),
+            originalSHA256: try sha256(for: rec.url),
+            exportedSHA256: try sha256(for: exportedURL),
+            latitude: rec.latitude,
+            longitude: rec.longitude,
+            address: rec.address,
+            locationPointCount: rec.locationPath?.count ?? 0,
+            timestampWatermarkIncluded: includeTimestampWatermark,
+            gpsOverlayIncluded: includeGPSOverlay,
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown",
+            buildNumber: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
+        )
+
+        let jsonURL = evidenceDirectory()
+            .appendingPathComponent("\(rec.url.deletingPathExtension().lastPathComponent)-evidence.json")
+        let txtURL = evidenceDirectory()
+            .appendingPathComponent("\(rec.url.deletingPathExtension().lastPathComponent)-evidence.txt")
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let jsonData = try encoder.encode(summary)
+        try jsonData.write(to: jsonURL, options: .atomic)
+
+        try renderEvidenceText(from: summary).write(to: txtURL, atomically: true, encoding: .utf8)
+        return jsonURL
+    }
+
+    func renderEvidenceText(from summary: EvidenceSummary) -> String {
+        [
+            "Bodycam Pro Evidence Summary",
+            "Recording: \(summary.recordingName)",
+            "Generated: \(ISO8601DateFormatter().string(from: summary.generatedAt))",
+            "Recorded At: \(summary.recordingStartedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "Unknown")",
+            String(format: "Duration: %.2f seconds", summary.durationSeconds),
+            "Original Size: \(summary.originalFileSizeBytes) bytes",
+            "Exported Size: \(summary.exportedFileSizeBytes) bytes",
+            "Original SHA256: \(summary.originalSHA256)",
+            "Exported SHA256: \(summary.exportedSHA256)",
+            summary.latitude.map { String(format: "Latitude: %.6f", $0) } ?? "Latitude: Unavailable",
+            summary.longitude.map { String(format: "Longitude: %.6f", $0) } ?? "Longitude: Unavailable",
+            "Address: \(summary.address ?? "Unavailable")",
+            "Tracked Points: \(summary.locationPointCount)",
+            "Timestamp Watermark: \(summary.timestampWatermarkIncluded ? "Included" : "Not included")",
+            "GPS Overlay: \(summary.gpsOverlayIncluded ? "Included" : "Not included")",
+            "App Version: \(summary.appVersion) (\(summary.buildNumber))"
+        ]
+        .joined(separator: "\n")
+    }
+
+    func sha256(for url: URL) throws -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw NSError(domain: "BodycamPro.EvidenceMode", code: 5, userInfo: [NSLocalizedDescriptionKey: "Unable to read file for hashing"])
+        }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while autoreleasepool(invoking: {
+            let data = handle.readData(ofLength: 1024 * 1024)
+            if data.isEmpty {
+                return false
+            }
+            hasher.update(data: data)
+            return true
+        }) {}
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    func fileSize(for url: URL) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.size] as? Int64 ?? 0
     }
 }
 
@@ -521,8 +868,7 @@ extension RecordingManager: AVCaptureFileOutputRecordingDelegate {
                                        address: address,
                                        locationPath: path)
 
-            recordings.insert(
-                Recording(name: outputFileURL.lastPathComponent,
+            let newRecording = Recording(name: outputFileURL.lastPathComponent,
                           duration: duration,
                           size: size,
                           url: outputFileURL,
@@ -530,9 +876,14 @@ extension RecordingManager: AVCaptureFileOutputRecordingDelegate {
                           latitude: latitude,
                           longitude: longitude,
                           address: address,
-                          locationPath: path),
-                at: 0
-            )
+                          locationPath: path,
+                          customName: nil,
+                          tags: [])
+            recordings.insert(newRecording, at: 0)
+
+            if self.iCloudBackupEnabled {
+                iCloudManager.shared.upload(newRecording)
+            }
 
             if self.isRecording {
                 let newURL = self.nextURL()

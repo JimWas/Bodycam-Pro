@@ -3,6 +3,7 @@ import MapKit
 import Photos
 import CoreLocation
 import AVFoundation
+import UIKit
 
 struct MainView: View {
     @StateObject private var manager = RecordingManager()
@@ -29,8 +30,26 @@ struct MainView: View {
     @State private var showMap = false
     @State private var selectedMapRecording: Recording?
     @State private var showPaywall = false
+    @State private var shareItems: [Any] = []
+    @State private var showShareSheet = false
+
+    // Video player
+    @State private var showVideoPlayer = false
+    // Rename
+    @State private var showRenameSheet = false
+    @State private var renameText = ""
+    // Tags
+    @State private var showTagsSheet = false
+    // Metadata detail
+    @State private var showDetailSheet = false
+    // Shared editing target
+    @State private var editingRecording: Recording?
+
+    @ObservedObject private var cloudManager = iCloudManager.shared
+    @State private var showEvidenceInfo = false
 
     @AppStorage("isPremium") private var isPremium = false
+    @AppStorage("autoStartRecording") private var autoStartRecording = false
 
     // MARK: - Body
     var body: some View {
@@ -72,6 +91,12 @@ struct MainView: View {
             .navigationBarHidden(true)
             .onAppear {
                 locationManager.requestPermission()
+                if autoStartRecording {
+                    // Brief delay so the view is fully on screen before presenting
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        showRecorder = true
+                    }
+                }
             }
 
             // Present Recording View
@@ -144,6 +169,37 @@ struct MainView: View {
             .sheet(isPresented: $showPaywall) {
                 PaywallView()
             }
+            .sheet(isPresented: $showShareSheet) {
+                ActivityView(items: shareItems)
+            }
+            .sheet(isPresented: $showVideoPlayer) {
+                if let rec = editingRecording {
+                    VideoPlayerView(recording: rec)
+                }
+            }
+            .sheet(isPresented: $showRenameSheet) {
+                if let rec = editingRecording {
+                    RenameSheet(recording: rec, initialName: rec.customName ?? "") { newName in
+                        manager.renameRecording(rec, customName: newName)
+                    }
+                }
+            }
+            .sheet(isPresented: $showTagsSheet) {
+                if let rec = editingRecording {
+                    TagsSheet(recording: rec) { tags in
+                        manager.updateTags(rec, tags: tags)
+                    }
+                }
+            }
+            .sheet(isPresented: $showDetailSheet) {
+                if let rec = editingRecording {
+                    RecordingDetailSheet(recording: rec)
+                }
+            }
+            // Widget deep link: open and auto-start recording
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("WidgetQuickStartRecording"))) { _ in
+                showRecorder = true
+            }
         }
     }
     
@@ -211,7 +267,7 @@ struct MainView: View {
     }
     
     private var configurationSection: some View {
-        VStack(spacing: 0) {
+            VStack(spacing: 0) {
             // Row 1: Camera & Lens
             HStack {
                 settingsMenu(title: "Camera", icon: "camera.fill") {
@@ -284,6 +340,99 @@ struct MainView: View {
                         .foregroundColor(.secondary)
                 }
                 .tint(.blue)
+
+                // Auto-Start Toggle
+                Toggle(isOn: $autoStartRecording) {
+                    Label("Auto-Start on Launch", systemImage: "bolt.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .tint(.blue)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: $manager.evidenceModeEnabled) {
+                        HStack(spacing: 6) {
+                            Label("Evidence Mode", systemImage: "checkmark.shield")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Button {
+                                showEvidenceInfo = true
+                            } label: {
+                                Image(systemName: "info.circle")
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue.opacity(0.7))
+                            }
+                            .buttonStyle(.plain)
+                            .sheet(isPresented: $showEvidenceInfo) {
+                                EvidenceModeInfoSheet()
+                            }
+                        }
+                    }
+                    .tint(.blue)
+
+                    if manager.evidenceModeEnabled {
+                        Toggle(isOn: $manager.includeTimestampWatermark) {
+                            Label("Timestamp Watermark", systemImage: "clock.badge.checkmark")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .tint(.blue)
+
+                        Toggle(isOn: $manager.includeGPSOverlay) {
+                            Label("GPS Coordinates Overlay", systemImage: "location.viewfinder")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .tint(.blue)
+
+                        Toggle(isOn: $manager.generateEvidenceSummary) {
+                            Label("Export Evidence Summary", systemImage: "doc.text.magnifyingglass")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .tint(.blue)
+
+                        Text("Evidence exports burn timestamp and GPS details into the saved video and generate a tamper-evident summary with SHA-256 hashes.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(isOn: $manager.iCloudBackupEnabled) {
+                        Label("iCloud Backup", systemImage: "icloud.and.arrow.up")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .tint(.blue)
+
+                    if manager.iCloudBackupEnabled {
+                        if cloudManager.isAvailable {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.icloud").foregroundColor(.green).font(.caption2)
+                                Text("Videos are automatically backed up to iCloud.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Button("Back Up All Now") {
+                                cloudManager.uploadAll(manager.recordings)
+                            }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                        } else {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.icloud").foregroundColor(.orange).font(.caption2)
+                                Text("Sign in to iCloud in Settings to enable backup.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
             }
             .padding()
         }
@@ -416,7 +565,7 @@ struct MainView: View {
                     .foregroundColor(selectedIDs.contains(rec.id) ? .blue : .gray.opacity(0.5))
             }
 
-            // Icon or Map Thumbnail
+            // Map thumbnail taps open map; plain icon taps open player
             if let lat = rec.latitude, let lon = rec.longitude {
                 MapSnapshotView(latitude: lat, longitude: lon)
                     .frame(width: 44, height: 44)
@@ -426,18 +575,24 @@ struct MainView: View {
                         showMap = true
                     }
             } else {
-                ZStack {
-                    Circle()
-                        .fill(Color.blue.opacity(0.1))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: "play.fill")
-                        .foregroundColor(.blue)
-                        .font(.caption)
+                Button {
+                    editingRecording = rec
+                    showVideoPlayer = true
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color.blue.opacity(0.1))
+                            .frame(width: 44, height: 44)
+                        Image(systemName: "play.fill")
+                            .foregroundColor(.blue)
+                            .font(.caption)
+                    }
                 }
+                .buttonStyle(.plain)
             }
-            
+
             VStack(alignment: .leading, spacing: 4) {
-                Text(rec.name)
+                Text(rec.displayName)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
@@ -449,41 +604,123 @@ struct MainView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-                // Location info if available
                 if let address = rec.address {
                     HStack(spacing: 4) {
-                        Image(systemName: "mappin.and.ellipse")
-                            .font(.caption2)
-                        Text(address)
-                            .font(.caption2)
-                            .lineLimit(1)
+                        Image(systemName: "mappin.and.ellipse").font(.caption2)
+                        Text(address).font(.caption2).lineLimit(1)
                     }
                     .foregroundColor(.green)
                 } else if let lat = rec.latitude, let lon = rec.longitude {
                     HStack(spacing: 4) {
-                        Image(systemName: "location.fill")
-                            .font(.caption2)
-                        Text("\(String(format: "%.4f", lat)), \(String(format: "%.4f", lon))")
-                            .font(.caption2)
+                        Image(systemName: "location.fill").font(.caption2)
+                        Text("\(String(format: "%.4f", lat)), \(String(format: "%.4f", lon))").font(.caption2)
                     }
                     .foregroundColor(.green)
                 }
+
+                // Tags row
+                if !rec.tags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(rec.tags, id: \.self) { tag in
+                                Text(tag)
+                                    .font(.caption2.weight(.medium))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Color.blue.opacity(0.1))
+                                    .foregroundColor(.blue)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
             }
-            
+
             Spacer()
-            
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.gray.opacity(0.5))
+
+            // iCloud status badge
+            if manager.iCloudBackupEnabled {
+                iCloudStatusIcon(for: rec)
+            }
+
+            Menu {
+                Button {
+                    editingRecording = rec
+                    showVideoPlayer = true
+                } label: {
+                    Label("Play Video", systemImage: "play.circle")
+                }
+
+                Button {
+                    editingRecording = rec
+                    showDetailSheet = true
+                } label: {
+                    Label("View Details", systemImage: "info.circle")
+                }
+
+                if rec.latitude != nil || rec.longitude != nil {
+                    Button {
+                        selectedMapRecording = rec
+                        showMap = true
+                    } label: {
+                        Label("View Map", systemImage: "map")
+                    }
+                }
+
+                Button {
+                    editingRecording = rec
+                    renameText = rec.customName ?? ""
+                    showRenameSheet = true
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+
+                Button {
+                    editingRecording = rec
+                    showTagsSheet = true
+                } label: {
+                    Label("Edit Tags", systemImage: "tag")
+                }
+
+                Button {
+                    Task { await shareEvidenceSummary(for: rec) }
+                } label: {
+                    Label("Share Evidence Summary", systemImage: "doc.badge.arrow.up")
+                }
+
+                if manager.iCloudBackupEnabled {
+                    Button {
+                        cloudManager.upload(rec)
+                    } label: {
+                        Label("Back Up to iCloud", systemImage: "icloud.and.arrow.up")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .foregroundColor(.gray.opacity(0.7))
+            }
         }
         .padding()
         .background(Color.white)
         .cornerRadius(12)
+        .contentShape(Rectangle())
         .onTapGesture {
             if selectMode {
                 toggleSelect(rec.id)
+            } else {
+                editingRecording = rec
+                showVideoPlayer = true
             }
         }
+    }
+
+    @ViewBuilder
+    private func iCloudStatusIcon(for rec: Recording) -> some View {
+        let status = cloudManager.syncStatus(for: rec)
+        Image(systemName: status.icon)
+            .font(.caption)
+            .foregroundColor(status == .uploaded ? .green : status == .uploading ? .blue : .gray.opacity(0.5))
     }
     
     // MARK: - Logic Helpers
@@ -545,19 +782,7 @@ struct MainView: View {
         Task {
             for rec in manager.recordings {
                 do {
-                    try await PHPhotoLibrary.shared().performChanges {
-                        let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: rec.url)
-
-                        // Embed GPS metadata if available
-                        if let lat = rec.latitude, let lon = rec.longitude {
-                            request?.location = CLLocation(latitude: lat, longitude: lon)
-                        }
-
-                        // Set creation date if available
-                        if let creation = rec.creation {
-                            request?.creationDate = creation
-                        }
-                    }
+                    try await manager.exportRecordingToLibrary(rec)
                     successCount += 1
                 } catch {
                     print("Failed to export \(rec.name): \(error)")
@@ -579,19 +804,7 @@ struct MainView: View {
         Task {
             for rec in selectedRecordings {
                 do {
-                    try await PHPhotoLibrary.shared().performChanges {
-                        let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: rec.url)
-
-                        // Embed GPS metadata if available
-                        if let lat = rec.latitude, let lon = rec.longitude {
-                            request?.location = CLLocation(latitude: lat, longitude: lon)
-                        }
-
-                        // Set creation date if available
-                        if let creation = rec.creation {
-                            request?.creationDate = creation
-                        }
-                    }
+                    try await manager.exportRecordingToLibrary(rec)
                     successCount += 1
                 } catch {
                     print("Failed to export \(rec.name): \(error)")
@@ -602,6 +815,17 @@ struct MainView: View {
                 exportedCount = successCount
                 showExportComplete = true
             }
+        }
+    }
+
+    @MainActor
+    private func shareEvidenceSummary(for rec: Recording) async {
+        do {
+            let items = try await manager.prepareEvidenceSummaryFiles(for: rec)
+            shareItems = items
+            showShareSheet = true
+        } catch {
+            print("Failed to prepare evidence summary for sharing: \(error)")
         }
     }
 }
@@ -676,37 +900,116 @@ struct FullMapView: View {
     let recording: Recording
     @Environment(\.dismiss) private var dismiss
 
+    @State private var cameraPosition: MapCameraPosition
+    @State private var scrubIndex: Double = 0
+
+    init(recording: Recording) {
+        self.recording = recording
+        // Start camera at the first path point, or the stored location
+        let coord: CLLocationCoordinate2D
+        if let first = recording.locationPath?.first {
+            coord = CLLocationCoordinate2D(latitude: first.latitude, longitude: first.longitude)
+        } else if let lat = recording.latitude, let lon = recording.longitude {
+            coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        } else {
+            coord = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        }
+        _cameraPosition = State(initialValue: .region(MKCoordinateRegion(
+            center: coord,
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        )))
+    }
+
+    private var path: [LocationPoint] { recording.locationPath ?? [] }
+
+    private var currentPoint: CLLocationCoordinate2D? {
+        guard !path.isEmpty else {
+            guard let lat = recording.latitude, let lon = recording.longitude else { return nil }
+            return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        }
+        let idx = min(Int(scrubIndex), path.count - 1)
+        return CLLocationCoordinate2D(latitude: path[idx].latitude, longitude: path[idx].longitude)
+    }
+
+    private var currentTimestamp: Date? {
+        guard !path.isEmpty else { return nil }
+        return path[min(Int(scrubIndex), path.count - 1)].timestamp
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if let lat = recording.latitude, let lon = recording.longitude {
-                    Map(initialPosition: .region(MKCoordinateRegion(
-                        center: CLLocationCoordinate2D(latitude: lat, longitude: lon),
-                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                    ))) {
-                        Marker(
-                            "Recording Location",
-                            coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)
-                        )
-                        .tint(.red)
+                if recording.latitude != nil || recording.longitude != nil || !path.isEmpty {
+                    ZStack(alignment: .bottom) {
+                        Map(position: $cameraPosition) {
+                            // Full route polyline
+                            if path.count > 1 {
+                                MapPolyline(
+                                    coordinates: path.map {
+                                        CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+                                    }
+                                )
+                                .stroke(.blue.opacity(0.6), lineWidth: 3)
+                            }
+                            // Current scrub position marker
+                            if let coord = currentPoint {
+                                Marker("", coordinate: coord)
+                                    .tint(.red)
+                            }
+                        }
+                        .mapControls {
+                            MapUserLocationButton()
+                            MapCompass()
+                            MapScaleView()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .ignoresSafeArea(edges: .top)
 
-                        if let path = recording.locationPath, path.count > 1 {
-                            MapPolyline(
-                                coordinates: path.map {
-                                    CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+                        // Bottom info + scrubber panel
+                        VStack(spacing: 0) {
+                            mapInfoPanel()
+
+                            // Route scrubber — only shown when we have multiple points
+                            if path.count > 1 {
+                                VStack(spacing: 6) {
+                                    HStack {
+                                        Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                                            .foregroundColor(.blue)
+                                        Text("Route Playback")
+                                            .font(.subheadline.bold())
+                                        Spacer()
+                                        if let ts = currentTimestamp {
+                                            Text(ts, style: .time)
+                                                .font(.caption.monospacedDigit())
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Slider(value: $scrubIndex, in: 0...Double(path.count - 1), step: 1)
+                                        .tint(.red)
+                                    HStack {
+                                        Text(path.first?.timestamp ?? Date(), style: .time)
+                                        Spacer()
+                                        Text("\(path.count) pts")
+                                        Spacer()
+                                        Text(path.last?.timestamp ?? Date(), style: .time)
+                                    }
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
                                 }
-                            )
-                            .stroke(.blue, lineWidth: 3)
+                                .padding()
+                                .background(.ultraThinMaterial)
+                            }
                         }
                     }
-                    .mapControls {
-                        MapUserLocationButton()
-                        MapCompass()
-                        MapScaleView()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(alignment: .bottom) {
-                        mapInfoPanel(lat: lat, lon: lon)
+                    .onChange(of: scrubIndex) { _, _ in
+                        if let coord = currentPoint {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                cameraPosition = .region(MKCoordinateRegion(
+                                    center: coord,
+                                    span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                                ))
+                            }
+                        }
                     }
                 } else {
                     ContentUnavailableView(
@@ -721,42 +1024,37 @@ struct FullMapView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func mapInfoPanel(lat: Double, lon: Double) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(recording.name)
+    private func mapInfoPanel() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(recording.displayName)
                 .font(.headline)
 
             if let address = recording.address {
                 HStack(spacing: 8) {
-                    Image(systemName: "mappin.and.ellipse")
-                        .foregroundColor(.red)
-                    Text(address)
-                        .font(.subheadline)
+                    Image(systemName: "mappin.and.ellipse").foregroundColor(.red)
+                    Text(address).font(.subheadline).foregroundColor(.secondary)
+                }
+            }
+
+            if let coord = currentPoint {
+                HStack(spacing: 8) {
+                    Image(systemName: "location.fill").foregroundColor(.blue)
+                    Text(String(format: "%.6f, %.6f", coord.latitude, coord.longitude))
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
 
-            HStack(spacing: 8) {
-                Image(systemName: "location.fill")
-                    .foregroundColor(.blue)
-                Text("\(String(format: "%.6f", lat)), \(String(format: "%.6f", lon))")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            if let path = recording.locationPath {
+            if !path.isEmpty {
                 HStack(spacing: 8) {
-                    Image(systemName: "point.bottomleft.forward.to.arrowtriangle.uturn.scurvepath")
-                        .foregroundColor(.green)
+                    Image(systemName: "point.bottomleft.forward.to.arrowtriangle.uturn.scurvepath").foregroundColor(.green)
                     Text("\(path.count) location points tracked")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -767,4 +1065,385 @@ struct FullMapView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial)
     }
+}
+
+// MARK: - Recording Detail Sheet
+
+struct RecordingDetailSheet: View {
+    let recording: Recording
+    @Environment(\.dismiss) private var dismiss
+    @State private var evidenceSummary: EvidenceSummary?
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .medium
+        return f
+    }()
+
+    var body: some View {
+        NavigationStack {
+            List {
+                // MARK: File
+                Section("File") {
+                    detailRow("Name", value: recording.displayName)
+                    detailRow("Filename", value: recording.name)
+                    detailRow("Duration", value: formatDuration(recording.duration))
+                    detailRow("Size", value: formatSize(recording.size))
+                    if let date = recording.creation {
+                        detailRow("Recorded", value: Self.dateFormatter.string(from: date))
+                    }
+                }
+
+                // MARK: Location
+                if recording.latitude != nil || recording.address != nil {
+                    Section("Location") {
+                        if let address = recording.address {
+                            detailRow("Address", value: address)
+                        }
+                        if let lat = recording.latitude {
+                            detailRow("Latitude", value: String(format: "%.6f°", lat))
+                        }
+                        if let lon = recording.longitude {
+                            detailRow("Longitude", value: String(format: "%.6f°", lon))
+                        }
+                        if let path = recording.locationPath {
+                            detailRow("GPS Points", value: "\(path.count) tracked")
+                        }
+                    }
+                }
+
+                // MARK: Tags
+                if !recording.tags.isEmpty {
+                    Section("Tags") {
+                        Text(recording.tags.joined(separator: ", "))
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // MARK: Evidence Summary (loaded from disk if present)
+                if let summary = evidenceSummary {
+                    Section("Evidence Summary") {
+                        detailRow("Generated", value: Self.dateFormatter.string(from: summary.generatedAt))
+                        detailRow("Timestamp Watermark", value: summary.timestampWatermarkIncluded ? "Included" : "Not included")
+                        detailRow("GPS Overlay", value: summary.gpsOverlayIncluded ? "Included" : "Not included")
+                        detailRow("GPS Points", value: "\(summary.locationPointCount)")
+                    }
+
+                    Section("Cryptographic Hashes") {
+                        hashRow("Original SHA-256", hash: summary.originalSHA256)
+                        hashRow("Exported SHA-256", hash: summary.exportedSHA256)
+                    }
+
+                    Section("File Sizes") {
+                        detailRow("Original", value: formatSize(summary.originalFileSizeBytes))
+                        detailRow("Exported", value: formatSize(summary.exportedFileSizeBytes))
+                    }
+
+                    Section("App") {
+                        detailRow("Version", value: "\(summary.appVersion) (\(summary.buildNumber))")
+                    }
+                } else {
+                    Section {
+                        Label("No evidence summary on file. Export with Evidence Mode enabled to generate one.", systemImage: "checkmark.shield")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Recording Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .onAppear { loadEvidenceSummary() }
+    }
+
+    // MARK: - Helpers
+
+    private func detailRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+    }
+
+    private func hashRow(_ label: String, hash: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(hash)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func loadEvidenceSummary() {
+        let evidenceDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Evidence")
+        let jsonURL = evidenceDir
+            .appendingPathComponent("\(recording.url.deletingPathExtension().lastPathComponent)-evidence.json")
+
+        guard let data = try? Data(contentsOf: jsonURL) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        evidenceSummary = try? decoder.decode(EvidenceSummary.self, from: data)
+    }
+
+    private func formatDuration(_ t: TimeInterval) -> String {
+        let h = Int(t) / 3600, m = (Int(t) % 3600) / 60, s = Int(t) % 60
+        return h > 0 ? String(format: "%dh %dm %ds", h, m, s) : String(format: "%dm %ds", m, s)
+    }
+
+    private func formatSize(_ bytes: Int64) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+}
+
+// MARK: - Evidence Mode Info Sheet
+
+struct EvidenceModeInfoSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+
+                    // Hero
+                    HStack(spacing: 14) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.system(size: 44))
+                            .foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Evidence Mode")
+                                .font(.title2.bold())
+                            Text("Turn recordings into legally-defensible documents.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.bottom, 4)
+
+                    infoCard(
+                        icon: "clock.badge.checkmark",
+                        iconColor: .orange,
+                        title: "Timestamp Watermark",
+                        body: "The recording date and time is permanently burned into the video frames — not as removable metadata, but as visible text baked into the pixels. Anyone watching the video can see exactly when it was recorded."
+                    )
+
+                    infoCard(
+                        icon: "location.viewfinder",
+                        iconColor: .green,
+                        title: "GPS Coordinates Overlay",
+                        body: "Your latitude, longitude, and street address are overlaid onto the video in the same way — permanently embedded into every frame, not attached as metadata that can be stripped."
+                    )
+
+                    infoCard(
+                        icon: "doc.text.magnifyingglass",
+                        iconColor: .blue,
+                        title: "Tamper-Evident Summary",
+                        body: "When you export, the app computes a SHA-256 cryptographic hash — a unique fingerprint — of both the original and exported file. If anyone modifies even a single frame after export, the hash will no longer match, proving tampering occurred. The summary report includes the hashes, timestamps, GPS data, and app version."
+                    )
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("When to use it")
+                            .font(.headline)
+                        Text("Evidence Mode is for situations where you may need to prove **what** happened, **where**, **when**, and that the footage hasn't been edited — workplace incidents, encounters with law enforcement, property disputes, insurance claims, or anything that might involve HR, a lawyer, or a court.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(Color(uiColor: .secondarySystemBackground))
+                    .cornerRadius(12)
+                }
+                .padding()
+            }
+            .navigationTitle("Evidence Mode")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func infoCard(icon: String, iconColor: Color, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(iconColor)
+                .frame(width: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.bold())
+                Text(body)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(Color(uiColor: .secondarySystemBackground))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Rename Sheet
+
+struct RenameSheet: View {
+    let recording: Recording
+    let initialName: String
+    let onSave: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+
+    init(recording: Recording, initialName: String, onSave: @escaping (String) -> Void) {
+        self.recording = recording
+        self.initialName = initialName
+        self.onSave = onSave
+        _text = State(initialValue: initialName)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Custom Name") {
+                    TextField("e.g. Work Commute", text: $text)
+                        .autocorrectionDisabled()
+                }
+                Section {
+                    Text("Filename: \(recording.name)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Rename Recording")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(text)
+                        dismiss()
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Tags Sheet
+
+private let presetTags = ["Work", "Commute", "Incident", "Travel", "Personal", "Evidence", "Training", "Other"]
+
+struct TagsSheet: View {
+    let recording: Recording
+    let onSave: ([String]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTags: Set<String>
+    @State private var customTag = ""
+
+    init(recording: Recording, onSave: @escaping ([String]) -> Void) {
+        self.recording = recording
+        self.onSave = onSave
+        _selectedTags = State(initialValue: Set(recording.tags))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Presets") {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(presetTags, id: \.self) { tag in
+                            Button {
+                                if selectedTags.contains(tag) { selectedTags.remove(tag) }
+                                else { selectedTags.insert(tag) }
+                            } label: {
+                                Text(tag)
+                                    .font(.subheadline)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
+                                    .background(selectedTags.contains(tag) ? Color.blue : Color(uiColor: .secondarySystemBackground))
+                                    .foregroundColor(selectedTags.contains(tag) ? .white : .primary)
+                                    .cornerRadius(8)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section("Custom Tag") {
+                    HStack {
+                        TextField("Add custom tag…", text: $customTag)
+                            .autocorrectionDisabled()
+                        Button("Add") {
+                            let t = customTag.trimmingCharacters(in: .whitespaces)
+                            guard !t.isEmpty else { return }
+                            selectedTags.insert(t)
+                            customTag = ""
+                        }
+                        .disabled(customTag.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
+                if !selectedTags.isEmpty {
+                    Section("Selected") {
+                        ForEach(Array(selectedTags).sorted(), id: \.self) { tag in
+                            HStack {
+                                Text(tag)
+                                Spacer()
+                                Button { selectedTags.remove(tag) } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundColor(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Tags")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(Array(selectedTags).sorted())
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Activity View
+
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

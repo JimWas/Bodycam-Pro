@@ -23,7 +23,7 @@ class AdMobManager: NSObject, ObservableObject {
 
     // MARK: - Ad Unit IDs
     let interstitialID = "ca-app-pub-3057383894764696/7162334670"
-    let rewardedID     = "ca-app-pub-3057383894764696/5912832188"
+    let rewardedID     = "ca-app-pub-3057383894764696/3121584402"
     let nativeAdID     = "ca-app-pub-3057383894764696/4017296581"
 
     override init() {

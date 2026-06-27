@@ -19,7 +19,15 @@ struct BodycamProApp: App {
     var body: some Scene {
         WindowGroup {
             MainView()
-                .preferredColorScheme(.light) // Optional: Keep app in light mode
+                .preferredColorScheme(.light)
+                .onOpenURL { url in
+                    if url.scheme == "bodycampro", url.host == "start-recording" {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("WidgetQuickStartRecording"),
+                            object: nil
+                        )
+                    }
+                }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active && !hasRequestedTracking {
